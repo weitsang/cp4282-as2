@@ -283,6 +283,9 @@ class TrainingConfig:
             elif name == "position_delay_multiplier":
                 if not 0.0 < value <= 1.0:
                     raise ValueError("learning_rates.position_delay_multiplier must be in (0, 1].")
+            elif name == "feature_rest":
+                if value < 0.0:
+                    raise ValueError("learning_rates.feature_rest must be non-negative.")
             elif value <= 0.0:
                 raise ValueError(f"learning_rates.{name} must be positive.")
 

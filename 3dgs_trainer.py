@@ -7,14 +7,19 @@ the sampled one. Both are marked TODO.
 Until you fill them in, every gradient buffer stays zero and Adam has nothing to apply, so no
 splat's position, scale, rotation, opacity or colour ever changes. Training still runs to
 completion, and `active` still grows because densification and pruning are driven separately, so
-`fixed_eval` drifts a little as splats are cloned. What it will not do is improve. That is the
+`fixed_eval_ema` drifts a little as splats are cloned. What it will not do is improve. That is the
 expected starting behaviour, not a bug in the harness.
 
-Check your work with the gradient checkers, which compare your analytic gradients against finite
-differences and, for the sparse kernel, against the dense one at full coverage:
+Check the dense kernel with the gradient checker, which compares your analytic gradients against
+central finite differences:
 
     python 3dgs_gradient_check_gpu.py --device cpu
-    python 3dgs_gradient_check_sparse_gpu.py --device cpu
+
+Check the sparse kernel against the dense one yourself. Set `sparse.samples_per_tile` to 256
+(`TILE * TILE`), which makes the sampler fall back to the exact raster grid: every pixel is then
+sampled exactly once, so the sparse path is doing the dense path's work and the loss and every
+gradient buffer must match a dense run to floating-point noise. If they do not, one of the two
+kernels is wrong.
 
 Usage:
     python 3dgs_trainer.py config/3dgs_training_gpu.yaml
@@ -44,12 +49,13 @@ import yaml
 _here = Path(__file__).resolve().parent
 if str(_here) not in sys.path:
     sys.path.insert(0, str(_here))
-# `shared/` sits beside this file in the assignment repo, and one level up in the course repo.
-for _candidate in (_here / "shared", _here.parent / "shared"):
-    if _candidate.is_dir():
-        if str(_candidate) not in sys.path:
-            sys.path.insert(0, str(_candidate))
-        break
+# These sit beside this file in the assignment repo, and one level up here.
+for _name in ("shared", "a1-solution"):
+    for _candidate in (_here / _name, _here.parent / _name):
+        if _candidate.is_dir():
+            if str(_candidate) not in sys.path:
+                sys.path.insert(0, str(_candidate))
+            break
 
 from trainable_gaussian import TrainableGaussianSet
 from gaussian_set import GaussianSet
@@ -590,10 +596,10 @@ def render_sparse_backward(
             # pixel, and the walk stops at `last_contributor[thread]` -- the entry where the
             # forward pass stopped -- instead of at the end of the tile's splat list.
             #
-            # Getting this to agree with the dense kernel matters:
-            # `3dgs_gradient_check_sparse_gpu.py` renders at full coverage, where every pixel in
-            # every tile is sampled exactly once, and asserts that the sparse loss and every
-            # sparse gradient buffer match the dense ones.
+            # Getting this to agree with the dense kernel matters, and full coverage is how you
+            # check it: at `sparse.samples_per_tile == TILE * TILE` every pixel in every tile is
+            # sampled exactly once, so the sparse loss and every sparse gradient buffer must match
+            # the dense ones.
 
             prefix_rgb = prefix_rgb + transmittance * alpha * colour
             transmittance = next_transmittance
@@ -724,7 +730,7 @@ class SplatOptimizers:
 
     def reset(self):
         """Clear all Adam moments after densify/prune changes which parameters exist. A clone
-        or split child needs fresh optimizer state -- see Unit 10, Stage 8."""
+        or split child needs fresh optimizer state -- see Unit 9, Stage 7."""
         for optimizer in self.optimizers:
             optimizer.reset_internal_state()
         self.quaternion_m.zero_()
@@ -880,9 +886,8 @@ class WarpImageTrainer:
 
         At `samples_per_tile == TILE * TILE` ("full coverage"), offsets are the exact raster grid
         instead of a random draw -- every pixel in every tile is sampled exactly once, so the
-        sparse path reduces bit-for-bit to the dense one. `3dgs_gradient_check_sparse_gpu.py`'s
-        `check_sparse_dense_equivalence` relies on that, so do not make the full-coverage case
-        random.
+        sparse path reduces bit-for-bit to the dense one. The sparse-versus-dense equivalence
+        check relies on that, so do not make the full-coverage case random.
 
         The SH trainer samples through this method with its own count and its own generator,
         rather than keeping a second copy that has to be changed in step with this one. The
@@ -1331,6 +1336,13 @@ class WarpImageTrainer:
             # gradient and are never rendered, and the densify event that eventually reuses a slot
             # as a clone/split destination resets state at that point.
             self.optimizers.reset()
+        # Report the slots this call filled. Nothing here needs it -- every parameter a version-1
+        # splat owns is overwritten above -- but a subclass carrying extra per-splat state has to
+        # reset that state on exactly these slots, and it cannot recover the list afterwards: a
+        # slot pruned and refilled within this same call is active before and after, so
+        # differencing the active mask misses it and the child silently inherits the dead splat's
+        # state. See Unit 9, Stage 7, and `SHTrainer.densify_and_prune` in version 2.
+        return chosen_children
 
     def save_sidecars(self, path):
         """Write any extra per-splat files that belong beside `path`, and return what was written.
@@ -1356,9 +1368,15 @@ class WarpImageTrainer:
 class ConvergenceTracker:
     """Tracks whether the fixed-evaluation loss has plateaued, for early stopping.
 
+    Fed the *smoothed* fixed_eval series, not the raw one. A single fixed evaluation moves with
+    every densification and prune event, so a raw plateau test spends its `min_delta` budget on
+    that jitter; smoothing first means the threshold measures trend rather than noise. The cost is
+    lag -- the average keeps improving for a while after the raw series flattens -- so a run stops
+    somewhat later than a raw-fed detector would.
+
     Only a true `eval_every` tick advances this state -- a snapshot-only iteration recomputes
     `fixed_eval` for logging and rendering, but must not affect when training stops, or
-    `snapshot_every` would silently reshape the stopping schedule. See Unit 10, Stage 10.
+    `snapshot_every` would silently reshape the stopping schedule. See Unit 9, Stage 9.
     """
 
     def __init__(self, config, initial_loss, enabled=None):
@@ -1406,6 +1424,11 @@ class ConvergenceTracker:
 
 class OpacityResetWindow:
     """Hides an opacity reset's transient from the convergence detectors.
+
+    Reads the same smoothed fixed_eval series the convergence tracker does. `open` and `accepts`
+    must be given the same series as each other: `accepts` decides recovery by comparing against
+    the level `open` recorded, and mixing a raw reading with a smoothed one would compare two
+    different quantities.
 
     An opacity reset deliberately caps every splat's opacity, so the next `fixed_eval` measures a
     model that was just knocked down. The detectors compare against the best value ever seen, so
@@ -1462,8 +1485,39 @@ class OpacityResetWindow:
             )
 
 
+class ExponentialMovingAverage:
+    """Decaying average of a scalar series, seeded by its first sample.
+
+    Both reported series -- the training loss and the fixed-evaluation loss -- are noisy enough
+    per sample that a single reading says little. The training loss is measured on one randomly
+    chosen view, and the fixed evaluation, though deterministic, moves with every densification
+    and prune event. Reporting and stage decisions therefore read the smoothed series; seeding
+    from the first sample rather than from zero avoids the warm-up bias that would otherwise make
+    early values meaningless.
+    """
+
+    def __init__(self, decay: float):
+        self.decay = decay
+        self.value = None
+
+    def update(self, sample: float) -> float:
+        self.value = sample if self.value is None else (
+            self.decay * self.value + (1.0 - self.decay) * sample
+        )
+        return self.value
+
+
 class GrowthPlateauTracker:
-    """Latch when active-splat growth has become small over recent densification ticks."""
+    """Latch when active-splat growth has become small over recent densification ticks.
+
+    A plateau means growth has slowed, not that the population is collapsing. A run that starts
+    from a large random cloud prunes most of it away in the first few hundred iterations, and that
+    collapse reads as a large *negative* mean growth -- far below any sensible threshold. Testing
+    only `mean < threshold` therefore latched on the startup transient at the first opportunity,
+    before the pool had begun growing at all, which is the opposite of the intended signal.
+    Requiring the mean to be non-negative as well distinguishes "growth has slowed" from
+    "growth has not started".
+    """
 
     def __init__(self, window: int, threshold_percent: float):
         self.window = window
@@ -1484,7 +1538,7 @@ class GrowthPlateauTracker:
                 self.recent_growth.pop(0)
             if len(self.recent_growth) == self.window:
                 mean_growth = sum(self.recent_growth) / self.window
-                if mean_growth < self.threshold_percent:
+                if 0.0 <= mean_growth < self.threshold_percent:
                     self.triggered = True
                     self.mean_growth_at_trigger = mean_growth
         self.previous_active = active_count
@@ -1615,26 +1669,40 @@ def run_training(
             "whole population, not only multi-view-scored candidates.",
             flush=True,
         )
-    print("Convergence checks read the raw fixed_eval validation loss.", flush=True)
+    print(
+        "Reported loss and fixed_eval are exponential moving averages over the raw series "
+        f"(decay {reporting['loss_ema_decay']}). Convergence checks and the opacity-reset "
+        "recovery test read the smoothed fixed_eval, so what is printed is what they decide on.",
+        flush=True,
+    )
 
     # Every trainer this loop drives reports which loss term is active from construction onward:
     # a fixed one here, a changing one in the versions that blend terms.
     fixed_eval_loss = trainer.evaluate(eval_view_ids)
     fixed_eval_iteration = 0
+    loss_ema = ExponentialMovingAverage(reporting["loss_ema_decay"])
+    fixed_eval_ema = ExponentialMovingAverage(reporting["loss_ema_decay"])
+    fixed_eval_ema.update(fixed_eval_loss)
     print(
-        f"{0:6d}: fixed_eval={fixed_eval_loss:.6f}, loss_phase={trainer.last_loss_phase}, "
-        f"eval_views={eval_view_ids.tolist()}",
+        f"{0:6d}: fixed_eval_ema={fixed_eval_ema.value:.6f}, "
+        f"loss_phase={trainer.last_loss_phase}, eval_views={eval_view_ids.tolist()}",
         flush=True,
     )
     rng = np.random.default_rng(runtime["seed"])
-    ema_loss = None
-    convergence_tracker = ConvergenceTracker(convergence, fixed_eval_loss)
+    convergence_tracker = ConvergenceTracker(convergence, fixed_eval_ema.value)
     growth_tracker = GrowthPlateauTracker(
         adaptive["late_prune_growth_window"], adaptive["late_prune_growth_percent"],
     )
     late_prune_armed = False
     reset_window = OpacityResetWindow()
     completed_iteration = 0
+    # Snapshot 0: the initial (pre-optimisation) model, so an animation can open on the
+    # random/checkpoint starting point before any gradient step has run.
+    save_rendered_image(trainer, snapshots / "out_000000.png")
+    if reporting["save_ply"]:
+        initial_ply = snapshots / "out_000000.ply"
+        trainer.gaussian_set().to_ply(initial_ply)
+        trainer.save_sidecars(initial_ply)
     training_started = perf_counter()
     for iteration in range(1, training["iterations"] + 1):
         completed_iteration = iteration
@@ -1684,32 +1752,30 @@ def run_training(
             and iteration % densification["opacity_reset_interval"] == 0
         ):
             reset_window.warn_if_unrecovered(iteration)
-            reset_window.open(fixed_eval_loss, iteration)
+            reset_window.open(fixed_eval_ema.value, iteration)
             trainer.reset_opacity()
         # A version that skips the loss download on quiet iterations reports None for them.
         if loss is not None:
-            ema_loss = loss if ema_loss is None else (
-                reporting["loss_ema_decay"] * ema_loss
-                + (1.0 - reporting["loss_ema_decay"]) * loss
-            )
+            loss_ema.update(loss)
         if is_eval_tick or should_snapshot:
             fixed_eval_loss = trainer.evaluate(eval_view_ids)
             fixed_eval_iteration = iteration
+            fixed_eval_ema.update(fixed_eval_loss)
             # Convergence bookkeeping only advances on a true eval_every tick. A snapshot alone
             # still needs a fresh fixed_eval to render and log, but it must not change when
             # training stops -- otherwise snapshot_every silently reshapes the stopping schedule.
             # An opacity reset's transient is not evidence about convergence; see
             # OpacityResetWindow.
-            if is_eval_tick and reset_window.accepts(fixed_eval_loss, iteration):
+            if is_eval_tick and reset_window.accepts(fixed_eval_ema.value, iteration):
                 if reset_window.resumed_this_tick:
-                    convergence_tracker.rebaseline(fixed_eval_loss)
+                    convergence_tracker.rebaseline(fixed_eval_ema.value)
                 else:
-                    convergence_tracker.update(fixed_eval_loss, iteration)
+                    convergence_tracker.update(fixed_eval_ema.value, iteration)
         if should_log:
             print(
-                f"{iteration:6d}: loss={loss:.6f}, ema={ema_loss:.6f}, "
+                f"{iteration:6d}: ema={loss_ema.value:.6f}, "
                 f"loss_phase={trainer.last_loss_phase}, "
-                f"fixed_eval={fixed_eval_loss:.6f}@{fixed_eval_iteration}, "
+                f"fixed_eval_ema={fixed_eval_ema.value:.6f}@{fixed_eval_iteration}, "
                 f"active={trainer.active.sum()}, "
                 f"pairs={trainer.last_pair_count}, "
                 f"lr_xyz={trainer.last_position_learning_rate:.8f}, "
@@ -1724,7 +1790,7 @@ def run_training(
                 trainer.save_sidecars(snapshot_ply)
         if convergence_tracker.should_stop(iteration):
             print(
-                f"Stopping at iteration {iteration}: fixed_eval has not improved by "
+                f"Stopping at iteration {iteration}: the fixed_eval EMA has not improved by "
                 f"at least {convergence['min_delta']:.3g} for {convergence_tracker.stale_count} "
                 "evaluation checks.",
                 flush=True,
