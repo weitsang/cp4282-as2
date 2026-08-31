@@ -1,7 +1,7 @@
 """Splat primitives shared by the assignment renderers and the Warp trainers.
 
-These used to live in `examples/3dgs_renderer_cpu.py`. The trainer only needs these few primitives,
-so they live here alongside the assignment's shared modules and have one source of truth.
+The renderer and the trainer both need these few primitives, so they live here rather than in
+either one of them, and have exactly one source of truth.
 """
 
 from __future__ import annotations

@@ -1,24 +1,27 @@
 # Annotated Walkthrough: the `shared/` package
 
-`shared/` holds the code used by more than one program: the reference renderer and the Assignment 2
-trainer. Nothing in it is a renderer or a trainer itself — it is the vocabulary they both speak.
+`shared/` holds the code used by more than one program: the Assignment 1 reference renderer and the
+Assignment 2 trainer. Nothing in it is a renderer or a trainer itself — it is the vocabulary they
+both speak.
 
-This document is a **map plus reference**. Five of the six modules are explained where the
-renderers first use them, so those entries point you there rather than repeating the explanation.
-The remaining one is covered here in full.
+This document is a **map plus reference**. Most modules are short enough to read directly, so the
+table points you at the source; `trainable_gaussian.py` is the one that needs explaining, and §1
+covers it in full.
 
-| Module | Used by | Explained |
+| Module | Used by | Where to read it |
 |---|---|---|
-| `camera.py` | renderer, trainer | [`camera.py`](shared/camera.py) |
-| `gaussian_set.py` | renderer, trainer | [`gaussian_set.py`](shared/gaussian_set.py) |
-| `projected_gaussians.py` | renderer | [`projected_gaussians.py`](shared/projected_gaussians.py) |
-| `splat_math.py` | renderer, trainer | [`splat_math.py`](shared/splat_math.py) |
-| `tile_builder.py` | trainer | [`tile_builder.py`](shared/tile_builder.py) |
-| `trainable_gaussian.py` | trainers only | §1 below |
+| `camera.py` | renderer | [`shared/camera.py`](shared/camera.py) |
+| `gaussian_set.py` | renderer, trainer, evaluator | [`shared/gaussian_set.py`](shared/gaussian_set.py) |
+| `profiling.py` | trainer | [`shared/profiling.py`](shared/profiling.py) |
+| `projected_gaussians.py` | renderer | [`shared/projected_gaussians.py`](shared/projected_gaussians.py) |
+| `splat_math.py` | renderer, trainer, config schema | [`shared/splat_math.py`](shared/splat_math.py) |
+| `tile_builder.py` | trainer | [`shared/tile_builder.py`](shared/tile_builder.py) |
+| `trainable_gaussian.py` | trainers | §1 below |
+| `training_config.py` | trainer | [`shared/training_config.py`](shared/training_config.py) |
 
-If you are working through the assignment, the last one is **not needed** — it belongs to training,
-which the renderers never do. Read it when you want to know how the splats in your `.ply` file were
-produced in the first place.
+`trainable_gaussian.py` is the one to read for Assignment 2: it is where every parameter your
+backward pass writes a gradient for actually lives. `training_config.py` is worth skimming too — it
+is the authoritative list of every YAML key the trainer accepts, with the defaults.
 
 ---
 
@@ -177,9 +180,13 @@ and a trainer that actually converges.
 
 ## 2. Reading order, once more
 
-For the assignment:
+For Assignment 2:
 
-1. [`3dgs_renderer_v1.py`](3dgs_renderer_v1.py) — the reference rendering pipeline.
-2. [`3dgs_trainer_annotated.md`](3dgs_trainer_annotated.md) — the training pipeline and Warp.
+1. §1 of this document — how a trainer stores splats it is allowed to move.
+2. [`3dgs_trainer_annotated.md`](3dgs_trainer_annotated.md) — the training pipeline, Warp, and the
+   two backward kernels that are your task.
+3. [`shared/training_config.py`](shared/training_config.py) — when you want to change a setting and
+   need to know what the key is called and what it defaults to.
 
-Then, if you want to understand where the splats came from: §1 of this document.
+[`3dgs_renderer_v1.py`](3dgs_renderer_v1.py) is Assignment 1's renderer, kept here only because the
+Unit 8 synthetic trainers reuse it. Assignment 2 does not depend on it.

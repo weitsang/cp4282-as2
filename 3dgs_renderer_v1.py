@@ -1,5 +1,14 @@
 """Pedagogical sequential CPU 3D Gaussian Splatting renderer.
 
+Assignment 1 code, included here because the Unit 8 synthetic trainers reuse it. The compositing
+loop in `CpuRenderer.render` is still the Assignment 1 TODO: as shipped it returns a black image.
+
+That matters beyond this file. `3dgs_1_syn_trainer.py` and `3dgs_k_syn_trainer.py` build their
+synthetic ground truth by calling `render`, so until you paste your own Assignment 1 solution into
+the loop below they train against an all-black target and their reported PSNR is meaningless.
+Assignment 2 proper -- the backward pass in `3dgs_trainer.py` -- does not use this file and works
+without it.
+
 Usage:
     python 3dgs_renderer_v1.py point_cloud.ply render.png
 

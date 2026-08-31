@@ -1,8 +1,7 @@
 """Opt-in per-stage timing for Warp training steps.
 
-Kept out of the trainer modules because every version wants it and none of them owns it: the
-version 1 trainer used to define it while only the version 2 trainer imported it back out, which
-made version 1 look like it had simply forgotten to instrument itself.
+Kept out of the trainer modules because every trainer wants it and none of them owns it. Set
+`WARP_3DGS_PROFILE_STEPS=1` to switch it on; it is off by default and costs nothing when off.
 
 The companion for tile construction is `tile_builder.PROFILE_TILES`, which reads its own
 environment variable and stores into `builder.stage_times`.

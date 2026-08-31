@@ -1,8 +1,8 @@
 """Finite-difference regression checks for the Unit 9 Warp trainer.
 
-Run from docs/examples:
+Run from the repository root:
 
-    python 3dgs_gradient_check_gpu.py
+    python 3dgs_gradient_check_gpu.py --device cpu
 
 The check is intentionally tiny. It compares the explicit Warp backward pass with central
 finite differences for every trainable parameter family, verifies that gradients do not
@@ -39,8 +39,8 @@ projected_covariance_diagonal = _base_trainer.projected_covariance_diagonal
 # rather than inheriting whichever one the configuration default currently selects. They also have
 # to: `finite_difference` below evaluates the loss three times and differences the results, and the
 # sparse path redraws its pixel sample on every call, so the three evaluations would be measuring
-# three different objectives. The sparse kernels have their own suite, which reseeds between
-# evaluations for that reason -- see `3dgs_gradient_check_sparse_gpu.py`.
+# three different objectives. Check the sparse kernel the way `3dgs_trainer.py`'s docstring
+# describes instead: at `sparse.samples_per_tile == TILE * TILE` it must match the dense path.
 DENSE_ONLY = {"sparse": {"enabled": False}}
 
 
