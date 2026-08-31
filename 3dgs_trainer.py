@@ -1556,10 +1556,9 @@ class ConvergenceTracker:
     def update(self, fixed_eval_loss, iteration):
         """Record one eval tick and count only a plateau toward early stopping.
 
-        A meaningful worsening resets patience so a temporary regression cannot be mistaken for
-        convergence.
+        Any worsening resets patience so a temporary regression cannot be mistaken for convergence.
         """
-        worsening = fixed_eval_loss > self.previous_loss + self.min_delta
+        worsening = fixed_eval_loss > self.previous_loss
         if fixed_eval_loss < self.best_loss - self.min_delta:
             self.best_loss = fixed_eval_loss
             self.stale_count = 0
