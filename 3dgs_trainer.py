@@ -1550,17 +1550,26 @@ class ConvergenceTracker:
         self.patience = config["patience"]
         self.min_delta = config["min_delta"]
         self.best_loss = initial_loss
+        self.previous_loss = initial_loss
         self.stale_count = 0
 
     def update(self, fixed_eval_loss, iteration):
-        """Record one true eval-tick's fixed_eval and update the stale-check count."""
+        """Record one eval tick and count only a plateau toward early stopping.
+
+        A meaningful worsening resets patience so a temporary regression cannot be mistaken for
+        convergence.
+        """
+        worsening = fixed_eval_loss > self.previous_loss + self.min_delta
         if fixed_eval_loss < self.best_loss - self.min_delta:
             self.best_loss = fixed_eval_loss
+            self.stale_count = 0
+        elif worsening:
             self.stale_count = 0
         elif self.enabled and iteration >= self.min_iterations:
             self.stale_count += 1
         else:
             self.stale_count = 0
+        self.previous_loss = fixed_eval_loss
 
     def rebaseline(self, fixed_eval_loss):
         """Restart from this reading, crediting nothing to the stale count.
@@ -1573,6 +1582,7 @@ class ConvergenceTracker:
         with identical settings advanced stage at 6800 and 13200, each on a reset-recovery tick.
         """
         self.best_loss = fixed_eval_loss
+        self.previous_loss = fixed_eval_loss
         self.stale_count = 0
 
     def should_stop(self, iteration):
