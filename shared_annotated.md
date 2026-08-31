@@ -1,8 +1,7 @@
 # Annotated Walkthrough: the `shared/` package
 
-`shared/` holds the code used by more than one program: the three assignment renderers
-(`3dgs_renderer_v1/v2/v3.py`) and the course trainers. Nothing in it is a renderer or a trainer
-itself — it is the vocabulary they both speak.
+`shared/` holds the code used by more than one program: the reference renderer and the Assignment 2
+trainer. Nothing in it is a renderer or a trainer itself — it is the vocabulary they both speak.
 
 This document is a **map plus reference**. Five of the six modules are explained where the
 renderers first use them, so those entries point you there rather than repeating the explanation.
@@ -10,11 +9,11 @@ The remaining one is covered here in full.
 
 | Module | Used by | Explained |
 |---|---|---|
-| `camera.py` | renderers, trainers | [v1 §2](3dgs_renderer_v1_annotated.md) |
-| `gaussian_set.py` | renderers, trainers | [v1 §3](3dgs_renderer_v1_annotated.md) |
-| `projected_gaussians.py` | renderers | [v1 §4](3dgs_renderer_v1_annotated.md) |
-| `splat_math.py` | renderers, trainers | [v1 §5](3dgs_renderer_v1_annotated.md) |
-| `tile_builder.py` | v3, trainers | [v3 §2](3dgs_renderer_v3_annotated.md) |
+| `camera.py` | renderer, trainer | [`camera.py`](shared/camera.py) |
+| `gaussian_set.py` | renderer, trainer | [`gaussian_set.py`](shared/gaussian_set.py) |
+| `projected_gaussians.py` | renderer | [`projected_gaussians.py`](shared/projected_gaussians.py) |
+| `splat_math.py` | renderer, trainer | [`splat_math.py`](shared/splat_math.py) |
+| `tile_builder.py` | trainer | [`tile_builder.py`](shared/tile_builder.py) |
 | `trainable_gaussian.py` | trainers only | §1 below |
 
 If you are working through the assignment, the last one is **not needed** — it belongs to training,
@@ -63,7 +62,7 @@ class TrainableGaussianSet:
     """
 ```
 
-Compare with `GaussianSet` from [v1 §3](3dgs_renderer_v1_annotated.md), which stores physical
+Compare with `GaussianSet` from [`shared/gaussian_set.py`](shared/gaussian_set.py), which stores physical
 scales and opacities in $[0,1]$. Here the fields are `log_scales` and `opacity_logits` instead.
 
 The reason is the same one that made `.ply` files store these encodings. Gradient descent adds a
@@ -162,7 +161,7 @@ The step is followed by housekeeping that the unconstrained encoding cannot hand
 - **Clamping the opacity logit** to $[-8, 4]$. The encoding keeps opacity in $(0,1)$ for any logit,
   but $\sigma(-20)$ is so close to zero that its gradient vanishes and the splat can never recover.
   The clamp keeps parameters in a range where learning still works.
-- **Renormalising the quaternion.** This is the repair promised in [v1 §5](3dgs_renderer_v1_annotated.md):
+- **Renormalising the quaternion.** This is the repair used by the renderer's quaternion conversion:
   a gradient step moves all four components independently and the result is no longer unit length,
   so the rotation is no longer a rotation. Dividing by the norm restores it. The `+ 1e-8` guards a
   quaternion that has collapsed to zero.
@@ -180,9 +179,7 @@ and a trainer that actually converges.
 
 For the assignment:
 
-1. [v1](3dgs_renderer_v1_annotated.md) — the maths, and `camera` / `gaussian_set` /
-   `projected_gaussians` / `splat_math` as it meets them.
-2. [v2](3dgs_renderer_v2_annotated.md) — Warp, and parallelism.
-3. [v3](3dgs_renderer_v3_annotated.md) — tiling, and `tile_builder`.
+1. [`3dgs_renderer_v1.py`](3dgs_renderer_v1.py) — the reference rendering pipeline.
+2. [`3dgs_trainer_annotated.md`](3dgs_trainer_annotated.md) — the training pipeline and Warp.
 
 Then, if you want to understand where the splats came from: §1 of this document.
