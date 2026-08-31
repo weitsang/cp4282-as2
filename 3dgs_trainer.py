@@ -49,13 +49,10 @@ import yaml
 _here = Path(__file__).resolve().parent
 if str(_here) not in sys.path:
     sys.path.insert(0, str(_here))
-# These sit beside this file in the assignment repo, and one level up here.
-for _name in ("shared", "a1-solution"):
-    for _candidate in (_here / _name, _here.parent / _name):
-        if _candidate.is_dir():
-            if str(_candidate) not in sys.path:
-                sys.path.insert(0, str(_candidate))
-            break
+# Shared modules sit beside this file in the assignment repository.
+_shared = _here / "shared"
+if str(_shared) not in sys.path:
+    sys.path.insert(0, str(_shared))
 
 from trainable_gaussian import TrainableGaussianSet
 from gaussian_set import GaussianSet

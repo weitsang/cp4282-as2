@@ -3,9 +3,9 @@
 This walkthrough explains the Assignment 2 trainer skeleton. Everything in the file is described
 except the reference bodies of the two backward kernels, which are your task.
 
-Read `3dgs_renderer_cpu_annotated.md` and `3dgs_renderer_gpu_annotated.md` first. Assignment 1
-built a renderer: given splats, produce an image. Assignment 2 runs that renderer backwards:
-given images, produce splats.
+Assignment 1 built a renderer: given splats, produce an image. Assignment 2 runs that renderer
+backwards: given images, produce splats. The reference renderer source is included as
+`3dgs_renderer_v1.py`.
 
 ## What Changes From Assignment 1
 
@@ -41,15 +41,14 @@ neighbour it uses:
 workspace_module = importlib.import_module("gaussian_first_tile_workspace_gpu")
 ```
 
-The trainer also puts two sibling directories on the import path so the shared helpers resolve:
+The trainer also puts its sibling `shared/` directory on the import path so the helpers resolve:
 
 ```python
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "shared"))
-sys.path.insert(1, str(Path(__file__).resolve().parents[1] / "a1-solution"))
+sys.path.insert(0, str(Path(__file__).resolve().parent / "shared"))
 ```
 
-`shared/` holds the data classes, tile builder and configuration schema. `a1-solution/` holds the
-Assignment 1 renderer, reused for validation renders.
+`shared/` holds the data classes, tile builder and configuration schema. The Assignment 2 repository
+contains all modules needed by the trainer; it does not depend on an Assignment 1 solution folder.
 
 ## The Parameters, and Why They Are Stored Oddly
 
