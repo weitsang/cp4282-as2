@@ -111,7 +111,20 @@ class TrainingConfig:
         "reporting": {
             "log_every": 20,
             "eval_every": 100,
-            "eval_views": 4,
+            # `fixed_eval` is measured on views the optimiser never trains on, so a falling
+            # fixed_eval means the model generalises rather than that it has memorised the
+            # training cameras. `eval_manifest` names the validation manifest inside `paths.data`;
+            # set it to null to fall back to evaluating on training views, which is what every
+            # run before this key existed did.
+            "eval_manifest": "transforms_val.json",
+            # How many held-out views to evaluate on. Eight is enough for the mean to be steady
+            # from one eval tick to the next -- four left visible jitter in the raw series -- and
+            # cheap enough to render at every `eval_every` tick.
+            "eval_views": 8,
+            # Explicit frame indices into `eval_manifest`, or null to choose `eval_views` frames
+            # automatically by farthest-point sampling over camera directions. Pin these when a
+            # comparison must score two runs on exactly the same cameras.
+            "eval_view_ids": None,
             "loss_ema_decay": 0.95,
             "snapshot_every": 200,
             "save_ply": True,
@@ -230,6 +243,30 @@ class TrainingConfig:
             raise ValueError(
                 "densification.opacity_reset_interval must be a non-negative integer."
             )
+        if reporting["eval_manifest"] is not None and (
+            not isinstance(reporting["eval_manifest"], str)
+            or not reporting["eval_manifest"].strip()
+        ):
+            raise ValueError("reporting.eval_manifest must be a non-empty string or null.")
+        held_out_ids = reporting["eval_view_ids"]
+        if held_out_ids is not None:
+            if not isinstance(held_out_ids, list) or not held_out_ids:
+                raise ValueError(
+                    "reporting.eval_view_ids must be a non-empty list of frame indices or null."
+                )
+            if any(
+                not isinstance(value, int) or isinstance(value, bool) or value < 0
+                for value in held_out_ids
+            ):
+                raise ValueError(
+                    "reporting.eval_view_ids entries must be non-negative integers."
+                )
+            if len(set(held_out_ids)) != len(held_out_ids):
+                raise ValueError("reporting.eval_view_ids must not repeat a frame index.")
+            if reporting["eval_manifest"] is None:
+                raise ValueError(
+                    "reporting.eval_view_ids indexes reporting.eval_manifest, which is null."
+                )
         if not 0.0 <= reporting["loss_ema_decay"] < 1.0:
             raise ValueError("reporting.loss_ema_decay must be in [0, 1).")
         if not isinstance(reporting["save_ply"], bool):
@@ -283,6 +320,9 @@ class TrainingConfig:
             elif name == "position_delay_multiplier":
                 if not 0.0 < value <= 1.0:
                     raise ValueError("learning_rates.position_delay_multiplier must be in (0, 1].")
+            elif name == "feature_rest":
+                if value < 0.0:
+                    raise ValueError("learning_rates.feature_rest must be non-negative.")
             elif value <= 0.0:
                 raise ValueError(f"learning_rates.{name} must be positive.")
 

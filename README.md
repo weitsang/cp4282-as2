@@ -19,8 +19,16 @@ python -m pip install -r requirements.txt
 The repository contains a small Lego dataset under `data/lego/`:
 
 - `train/` contains posed training images and `transforms_train.json`.
-- `test/` contains held-out images and `transforms_test.json`.
+- `val/` contains validation images and `transforms_val.json` for training-time held-out checks.
+- `test/` contains held-out images and `transforms_test.json` for final evaluation.
 - `init.ply` is a small starting point for the full-training assignment.
+
+The trainer reads **both** manifests. It optimises only against `train/`; it renders eight
+held-out views from `val/` every `reporting.eval_every` iterations to report `fixed_eval`, so
+that number measures generalisation rather than a second reading of the training loss. The
+validation views are never used to compute a gradient. The trainer prints exactly which frames it
+picked on its first line, and `reporting.eval_manifest: null` reverts to evaluating on training
+views if you want the old behaviour.
 
 ## The assignment
 
