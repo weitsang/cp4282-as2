@@ -488,11 +488,12 @@ reused. This avoids reallocating device buffers mid-run.
 Three small classes, each solving a specific failure.
 
 `ConvergenceTracker` stops training when `fixed_eval` — the held-out loss described above —
-stops improving by at least `min_delta` for `patience` consecutive checks. Stopping on a held-out
-reading rather than a training one is the point: a training loss can still be falling while the
-model is only memorising, and a run stopped on that signal trains long past any real gain. Note
-`rebaseline`, which restarts the comparison
-from a given reading rather than treating it as a failure to improve.
+has plateaued within `min_delta` for `patience` consecutive checks. A meaningful worsening resets
+the patience counter, giving the model time to recover from a temporary regression or an objective
+change. Stopping on a held-out reading rather than a training one is the point: a training loss can
+still be falling while the model is only memorising, and a run stopped on that signal trains long
+past any real gain. Note `rebaseline`, which restarts the comparison from a given reading rather
+than treating it as a failure to improve.
 
 `OpacityResetWindow` exists because opacity reset deliberately caps every splat's opacity, so the
 next validation reading measures a model that was just knocked down. Without shielding, the
