@@ -167,11 +167,27 @@ def resolve_frame_image(data: Path, frame_path: str) -> Path:
     raise FileNotFoundError(f"Could not find image for frame '{frame_path}'. Tried: {tried}")
 
 
-def load_views(data: Path, width: int, height: int, background: np.ndarray, manifest_name: str = "transforms_train.json"):
+def load_views(
+    data: Path,
+    width: int,
+    height: int,
+    background: np.ndarray,
+    manifest_name: str = "transforms_train.json",
+    frame_ids=None,
+):
+    """Load a manifest's views, or only the frames named by `frame_ids`.
+
+    `frame_ids` exists so the held-out evaluation set costs eight image decodes rather than the
+    whole validation manifest: the frames are chosen from the poses, which are in the JSON, before
+    any pixels are read.
+    """
     manifest = json.loads((data / manifest_name).read_text())
     focal = np.float32(0.5 * width / np.tan(0.5 * manifest["camera_angle_x"]))
+    frames = manifest["frames"]
+    if frame_ids is not None:
+        frames = [frames[int(frame_id)] for frame_id in frame_ids]
     images, cameras, distances, frame_paths = [], [], [], []
-    for frame in manifest["frames"]:
+    for frame in frames:
         image = Image.open(resolve_frame_image(data, frame["file_path"])).convert("RGBA")
         rgba = np.asarray(image.resize((width, height), Image.LANCZOS), np.float32) / 255.0
         alpha = rgba[..., 3:4]
@@ -180,6 +196,154 @@ def load_views(data: Path, width: int, height: int, background: np.ndarray, mani
         distances.append(np.linalg.norm(np.asarray(frame["transform_matrix"], np.float32)[:3, 3]))
         frame_paths.append(frame["file_path"])
     return np.stack(images), np.stack(cameras), focal, float(np.mean(distances)), frame_paths
+
+
+def read_manifest(data: Path, manifest_name: str) -> dict:
+    """Read one transforms manifest without decoding any image."""
+    path = data / manifest_name
+    if not path.exists():
+        raise FileNotFoundError(
+            f"Evaluation manifest '{manifest_name}' not found in {data}. Point "
+            "reporting.eval_manifest at the held-out manifest, or set it to null to evaluate "
+            "on training views."
+        )
+    return json.loads(path.read_text())
+
+
+def select_diverse_frame_ids(transform_matrices, count: int) -> list:
+    """Choose `count` frames whose cameras are as spread out over the sphere as possible.
+
+    Farthest-point sampling on the unit camera directions, seeded at frame 0. Evenly *striding*
+    the manifest is not the same thing: the NeRF-synthetic validation cameras walk a spiral rather
+    than an ordered sweep, so on lego's 100 validation frames eight evenly spaced indices include a
+    pair only 2.4 degrees apart -- effectively the same view measured twice -- while these eight
+    are at least 41.4 degrees apart. Sampling on direction rather than position ignores the small
+    radius differences between frames, which are not what makes a view informative.
+
+    Deterministic: `argmax` breaks ties toward the lowest index, and the result is returned in
+    manifest order so a run's evaluation set can be read straight out of the log.
+    """
+    positions = np.asarray(
+        [np.asarray(matrix, np.float64)[:3, 3] for matrix in transform_matrices], np.float64,
+    )
+    if len(positions) == 0:
+        raise ValueError("The evaluation manifest contains no frames.")
+    directions = positions / np.maximum(
+        np.linalg.norm(positions, axis=1, keepdims=True), 1.0e-12,
+    )
+    count = max(1, min(count, len(directions)))
+    chosen = [0]
+    distance = np.sum((directions - directions[0]) ** 2, axis=1)
+    while len(chosen) < count:
+        nxt = int(np.argmax(distance))
+        chosen.append(nxt)
+        distance = np.minimum(distance, np.sum((directions - directions[nxt]) ** 2, axis=1))
+    return sorted(chosen)
+
+
+def load_evaluation_views(
+    data: Path, width: int, height: int, background, reporting: dict,
+    train_manifest_name: str = "transforms_train.json",
+):
+    """Resolve the held-out evaluation views, or `None` when evaluation stays on training views.
+
+    Returns `(targets, cameras, frame_ids)` for the frames selected out of
+    `reporting.eval_manifest`.
+    """
+    manifest_name = reporting["eval_manifest"]
+    if manifest_name is None:
+        return None
+    manifest = read_manifest(data, manifest_name)
+    # The trainer holds one focal length for every view, taken from the training manifest, so a
+    # held-out manifest shot with a different field of view would be rendered with the wrong
+    # camera and read as a quality problem rather than a configuration one.
+    train_angle = float(read_manifest(data, train_manifest_name)["camera_angle_x"])
+    eval_angle = float(manifest["camera_angle_x"])
+    if abs(eval_angle - train_angle) > 1.0e-6:
+        raise ValueError(
+            f"'{manifest_name}' has camera_angle_x={eval_angle:.8f}, but the training manifest "
+            f"'{train_manifest_name}' has {train_angle:.8f}. Held-out views must share the "
+            "training field of view."
+        )
+    frames = manifest["frames"]
+    frame_ids = reporting["eval_view_ids"]
+    if frame_ids is None:
+        frame_ids = select_diverse_frame_ids(
+            [frame["transform_matrix"] for frame in frames], reporting["eval_views"],
+        )
+    else:
+        out_of_range = [i for i in frame_ids if i >= len(frames)]
+        if out_of_range:
+            raise ValueError(
+                f"reporting.eval_view_ids {out_of_range} are past the end of "
+                f"'{manifest_name}', which has {len(frames)} frames."
+            )
+        frame_ids = sorted(frame_ids)
+    targets, cameras, _, _, _ = load_views(
+        data, width, height, background, manifest_name=manifest_name, frame_ids=frame_ids,
+    )
+    return targets, cameras, frame_ids
+
+
+def append_evaluation_views(targets, cameras, held_out):
+    """Place the held-out views after the training views in one shared view-id space.
+
+    The trainer indexes cameras and ground truth by a single view id, so held-out views have to
+    live in the same arrays. Keeping them at the end means the training loop's random view draw,
+    `rng.integers(len(targets))` over the *training* array it is still handed, can never reach
+    them -- which is the whole point of holding them out.
+    """
+    if held_out is None:
+        return targets, cameras, None
+    held_targets, held_cameras, _ = held_out
+    eval_view_ids = np.arange(
+        len(targets), len(targets) + len(held_targets), dtype=np.int32,
+    )
+    return (
+        np.concatenate((targets, held_targets)),
+        np.concatenate((cameras, held_cameras)),
+        eval_view_ids,
+    )
+
+
+def training_view_eval_ids(targets, reporting: dict) -> np.ndarray:
+    """Fallback evaluation set: evenly spaced *training* views, the pre-held-out behaviour."""
+    eval_count = min(reporting["eval_views"], len(targets))
+    return np.linspace(0, len(targets) - 1, eval_count, dtype=np.int32)
+
+
+def resolve_evaluation_views(
+    targets, cameras, data: Path, background, reporting: dict,
+    train_manifest_name: str = "transforms_train.json",
+):
+    """Build the trainer's view arrays and the fixed-evaluation view ids from one config.
+
+    All three trainers call this, so the held-out set is chosen the same way in each. `targets`
+    and `cameras` are the *training* views as loaded; the returned arrays are those plus the
+    held-out views appended, and the caller must keep passing the training-only `targets` to the
+    training loop so the random view draw stays inside the training set.
+
+    Returns `(all_targets, all_cameras, eval_view_ids, held_out_frame_ids)`, where the last is
+    `None` when evaluation falls back to evenly spaced training views.
+    """
+    height, width = targets.shape[1], targets.shape[2]
+    held_out = load_evaluation_views(
+        data, width, height, background, reporting, train_manifest_name,
+    )
+    all_targets, all_cameras, eval_view_ids = append_evaluation_views(targets, cameras, held_out)
+    if eval_view_ids is None:
+        return all_targets, all_cameras, training_view_eval_ids(targets, reporting), None
+    return all_targets, all_cameras, eval_view_ids, held_out[2]
+
+
+def describe_evaluation_views(eval_view_ids, held_out_frame_ids, manifest_name) -> str:
+    """One log line saying exactly which cameras `fixed_eval` is measured on."""
+    if held_out_frame_ids is None:
+        return f"eval_views={list(map(int, eval_view_ids))} (training views)"
+    return (
+        f"eval_views={list(map(int, eval_view_ids))} "
+        f"(held out: {manifest_name} frames {list(map(int, held_out_frame_ids))})"
+    )
 
 
 @wp.func
@@ -1600,10 +1764,15 @@ def main() -> None:
             f"Checkpoint has {len(initial.means):,} splats, exceeding "
             f"model.capacity={model['capacity']:,}."
         )
-    eval_count = min(reporting["eval_views"], len(targets))
-    eval_view_ids = np.linspace(0, len(targets) - 1, eval_count, dtype=np.int32)
+    # `targets`/`cameras` stay the training views; `all_targets`/`all_cameras` are those with the
+    # held-out evaluation views appended. The trainer indexes one view-id space, so it gets the
+    # combined arrays; `run_training` gets the training-only ones and can therefore never draw a
+    # held-out camera to optimise against.
+    all_targets, all_cameras, eval_view_ids, held_out_frame_ids = resolve_evaluation_views(
+        targets, cameras, paths["data"], background, reporting,
+    )
     trainer = WarpImageTrainer(
-        targets, cameras, focal, scene_radius, model["capacity"],
+        all_targets, all_cameras, focal, scene_radius, model["capacity"],
         model["initial_splats"], device, runtime["seed"],
         init_scene=initial,
         background=background,
@@ -1618,11 +1787,15 @@ def main() -> None:
     output = png_output_path(paths["output"])
     snapshots = Path(f"{output.with_suffix('')}_snapshots")
     snapshots.mkdir(parents=True, exist_ok=True)
-    run_training(trainer, config, targets, eval_view_ids, snapshots, output)
+    run_training(
+        trainer, config, targets, eval_view_ids, snapshots, output,
+        held_out_frame_ids=held_out_frame_ids,
+    )
 
 
 def run_training(
     trainer, config, targets, eval_view_ids, snapshots, output, description=None,
+    held_out_frame_ids=None,
 ) -> None:
     """Run the training loop: logging, snapshots, densification, and the final save.
 
@@ -1672,7 +1845,13 @@ def run_training(
     print(
         "Reported loss and fixed_eval are exponential moving averages over the raw series "
         f"(decay {reporting['loss_ema_decay']}). Convergence checks and the opacity-reset "
-        "recovery test read the smoothed fixed_eval, so what is printed is what they decide on.",
+        "recovery test read the smoothed fixed_eval, so what is printed is what they decide on. "
+        + (
+            "fixed_eval is measured on held-out views the optimiser never sees, so it is a "
+            "generalisation measurement and not a second reading of the training loss."
+            if held_out_frame_ids is not None
+            else "fixed_eval is measured on training views (reporting.eval_manifest is null)."
+        ),
         flush=True,
     )
 
@@ -1685,7 +1864,10 @@ def run_training(
     fixed_eval_ema.update(fixed_eval_loss)
     print(
         f"{0:6d}: fixed_eval_ema={fixed_eval_ema.value:.6f}, "
-        f"loss_phase={trainer.last_loss_phase}, eval_views={eval_view_ids.tolist()}",
+        f"loss_phase={trainer.last_loss_phase}, "
+        + describe_evaluation_views(
+            eval_view_ids, held_out_frame_ids, reporting["eval_manifest"],
+        ),
         flush=True,
     )
     rng = np.random.default_rng(runtime["seed"])

@@ -96,15 +96,17 @@ and rejects unknown keys. Sections:
 | `sparse` | Sampled-pixel training |
 | `adaptive` | Growth-plateau detection |
 | `convergence` | Early stopping |
-| `reporting` | Log, eval and snapshot cadence |
+| `reporting` | Log, eval and snapshot cadence, and which views `fixed_eval` is measured on |
 
 Rejecting unknown keys matters more than it sounds. A typo in a YAML key would otherwise be
 silently ignored and you would spend an afternoon wondering why a setting had no effect.
 
 ## Loading the Data
 
-`load_views` reads `transforms_train.json`, the NeRF-synthetic manifest. Each frame gives a
-`transform_matrix` (camera-to-world, Blender convention) and an image path.
+`load_views` reads a NeRF-synthetic manifest — `transforms_train.json` by default. Each frame
+gives a `transform_matrix` (camera-to-world, Blender convention) and an image path. It also takes
+`frame_ids`, which loads only the frames you name; the held-out evaluation set uses that so it
+decodes eight images instead of the whole validation split.
 
 ```python
 def blender_pose_to_world_to_camera(transform: list[list[float]]) -> np.ndarray:
@@ -124,6 +126,36 @@ If you skipped this, the transparent surround would train as black, and the mode
 dark halo around the object.
 
 The focal length comes from `camera_angle_x` in the manifest, scaled to the working resolution.
+
+### The held-out evaluation set
+
+The trainer loads a *second* manifest, `reporting.eval_manifest` (default `transforms_val.json`).
+Those views are what `fixed_eval` is measured on, and they are never used to compute a gradient.
+
+The reason is that a loss measured on pictures you are actively fitting only tells you the
+optimiser is working, not that the model is any good. The difference is not subtle. In a long
+reference run on this scene — 768x768, 20 000 iterations, far past what `config/` ships — the
+training views read about 33.9 dB while the held-out views read about 28.3 dB, and the gap grows
+from under 1 dB early on to over 5 dB by the end. The first number is memorisation; the second is
+what the model would do on a camera it has never been shown. Your own run is much shorter and at
+a lower resolution, so expect smaller numbers and a smaller gap — the point is the direction, not
+the values.
+
+Keeping both sets usable at once needs one trick. The trainer indexes cameras and ground truth by
+a single view id, so the held-out views are **appended after** the training views in the same
+arrays, and `run_training` is handed only the training-view array. Its random camera draw is
+`rng.integers(len(targets))` over that shorter array, so it cannot reach a held-out view — the
+separation is a property of the indexing, not a check that could be forgotten.
+
+Which frames are chosen is decided by `select_diverse_frame_ids`: farthest-point sampling over the
+unit camera directions, which spreads the eight views over the sphere. Simply taking every 25th
+frame is worse than it looks — the validation cameras walk a spiral rather than an ordered sweep,
+so an even stride can land two picks 2.4 degrees apart and measure nearly the same view twice.
+Set `reporting.eval_view_ids` to pin exact frames when two runs must be scored on identical
+cameras, or `reporting.eval_manifest: null` to go back to evaluating on training views.
+
+The trainer prints the frames it picked on its first line, so the evaluation set is recoverable
+from any log.
 
 ## Geometry: From 3D Gaussian To Screen-Space Ellipse
 
@@ -456,8 +488,11 @@ reused. This avoids reallocating device buffers mid-run.
 
 Three small classes, each solving a specific failure.
 
-`ConvergenceTracker` stops training when the validation loss stops improving by at least
-`min_delta` for `patience` consecutive checks. Note `rebaseline`, which restarts the comparison
+`ConvergenceTracker` stops training when `fixed_eval` — the held-out loss described above —
+stops improving by at least `min_delta` for `patience` consecutive checks. Stopping on a held-out
+reading rather than a training one is the point: a training loss can still be falling while the
+model is only memorising, and a run stopped on that signal trains long past any real gain. Note
+`rebaseline`, which restarts the comparison
 from a given reading rather than treating it as a failure to improve.
 
 `OpacityResetWindow` exists because opacity reset deliberately caps every splat's opacity, so the
@@ -472,7 +507,9 @@ settled and late pruning is armed.
 ## `run_training` and `main`
 
 `run_training` is the loop: sample a camera, step, periodically densify, evaluate, snapshot,
-check convergence. `main` parses the config, loads views, builds the trainer, and calls it.
+check convergence. `main` parses the config, loads both view sets, builds the trainer over the
+combined arrays, and calls `run_training` with the training views alone — which is what keeps the
+held-out cameras out of the optimiser.
 
 ```bash
 python 3dgs_trainer.py config/3dgs_training_gpu.yaml
